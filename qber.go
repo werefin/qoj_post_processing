@@ -11,11 +11,8 @@ type QBERResult struct {
 // sifted key, faulty and non-faulty blocks combined
 func CalculateQBER(discardedAliceBlocks, discardedBobBlocks []byte, siftedBits int) QBERResult {
 	errBits := 0
-	n := len(discardedAliceBlocks)
-	if len(discardedBobBlocks) < n {
-		n = len(discardedBobBlocks)
-	}
-	for i := 0; i < n; i++ {
+	n := min(len(discardedAliceBlocks), len(discardedBobBlocks))
+	for i := range n {
 		if discardedAliceBlocks[i] != discardedBobBlocks[i] {
 			errBits++
 		}

@@ -44,7 +44,7 @@ func TestToeplitzImplsRandomizedAgainstNaive(t *testing.T) {
 	for name, impl := range toeplitzImpls {
 		t.Run(name, func(t *testing.T) {
 			r := rand.New(rand.NewSource(123))
-			for trial := 0; trial < 30; trial++ {
+			for trial := range 30 {
 				n := 1 + r.Intn(500)
 				l := 1 + r.Intn(500)
 				x := randomBits(r, n)

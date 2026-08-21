@@ -50,13 +50,7 @@ func extractWindowInto(words []uint64, bitOffset, numBits int, dst []uint64) {
 	ndst := len(dst)
 
 	if bitShift == 0 {
-		safe := nw - wordIdx
-		if safe > ndst {
-			safe = ndst
-		}
-		if safe < 0 {
-			safe = 0
-		}
+		safe := max(min(nw-wordIdx, ndst), 0)
 		copy(dst[:safe], words[wordIdx:wordIdx+safe])
 		for k := safe; k < ndst; k++ {
 			dst[k] = wordAt(words, wordIdx+k)
@@ -64,14 +58,8 @@ func extractWindowInto(words []uint64, bitOffset, numBits int, dst []uint64) {
 		return
 	}
 
-	safe := nw - wordIdx - 1
-	if safe > ndst {
-		safe = ndst
-	}
-	if safe < 0 {
-		safe = 0
-	}
-	for k := 0; k < safe; k++ {
+	safe := max(min(nw-wordIdx-1, ndst), 0)
+	for k := range safe {
 		dst[k] = (words[wordIdx+k] >> bitShift) | (words[wordIdx+k+1] << (64 - bitShift))
 	}
 	for k := safe; k < ndst; k++ {
@@ -111,21 +99,13 @@ func toeplitzHashPopcount(x []byte, seed []byte, l int) []byte {
 	if l*numWords < minParallelPopcountWork {
 		workers = 1
 	}
-	if workers > l {
-		workers = l
-	}
-	if workers < 1 {
-		workers = 1
-	}
+	workers = max(min(workers, l), 1)
 
 	var wg sync.WaitGroup
 	chunk := (l + workers - 1) / workers
-	for w := 0; w < workers; w++ {
+	for w := range workers {
 		start := w * chunk
-		end := start + chunk
-		if end > l {
-			end = l
-		}
+		end := min(start+chunk, l)
 		if start >= end {
 			continue
 		}
@@ -162,9 +142,9 @@ func toeplitzHashPopcount(x []byte, seed []byte, l int) []byte {
 func toeplitzHashNaive(x []byte, seed []byte, l int) []byte {
 	n := len(x)
 	out := make([]byte, l)
-	for i := 0; i < l; i++ {
+	for i := range l {
 		var acc byte
-		for j := 0; j < n; j++ {
+		for j := range n {
 			if x[j] == 0 {
 				continue
 			}

@@ -18,7 +18,7 @@ func simulate(n int, errRate, multiPhotonRate float64, jitterPS int64, seed int6
 	bob := make([]qkd.DetectionEvent, 0, n)
 
 	t := int64(0)
-	for i := 0; i < n; i++ {
+	for range n {
 		t += 1000
 		aBasis := qkd.Basis(r.Intn(2))
 		bBasis := qkd.Basis(r.Intn(2))

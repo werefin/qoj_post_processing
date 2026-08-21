@@ -47,7 +47,7 @@ func TestRunEndToEnd(t *testing.T) {
 	n := 50000
 	var alice, bob []DetectionEvent
 	tcur := int64(0)
-	for i := 0; i < n; i++ {
+	for range n {
 		tcur += 1000
 		aBasis := Basis(r.Intn(2))
 		bBasis := Basis(r.Intn(2))

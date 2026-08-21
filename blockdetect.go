@@ -1,6 +1,7 @@
 package qkdpostproc
 
 import (
+	"fmt"
 	"math/bits"
 	"runtime"
 	"sync"
@@ -44,6 +45,23 @@ var (
 		{1, 0, 1, 1, 1, 0},
 	}
 )
+
+// CascadeGeneratorMatrices stacks g1's rows on g2's, catching collisions
+// unique to g1 alone - needs equal block sizes and p1+p2 < m
+func CascadeGeneratorMatrices(g1, g2 GeneratorMatrix) (GeneratorMatrix, error) {
+	m := g1.BlockSize()
+	if g2.BlockSize() != m {
+		return nil, fmt.Errorf("cascade: g1 block size %d != g2 block size %d", m, g2.BlockSize())
+	}
+	p := g1.ParityBits() + g2.ParityBits()
+	if p >= m {
+		return nil, fmt.Errorf("cascade: combined parity bits %d >= block size %d, no secret would remain", p, m)
+	}
+	combined := make(GeneratorMatrix, 0, p)
+	combined = append(combined, g1...)
+	combined = append(combined, g2...)
+	return combined, nil
+}
 
 // parityMasks precomputes each row of G as a bit-mask, turning the
 // M*G^T parity computation into p AND+POPCNT passes per block
@@ -101,7 +119,7 @@ func parityEqual(a, b []byte) bool {
 }
 
 // ComputeBlockParity computes the parity vector for every m-bit block,
-// using only this side's own bits - a peer only ever needs the result
+// using only this side's own bits --> a peer only ever needs the result
 func ComputeBlockParity(bits []byte, g GeneratorMatrix) [][]byte {
 	blockSize := g.BlockSize()
 	if blockSize <= 0 {
@@ -111,25 +129,16 @@ func ComputeBlockParity(bits []byte, g GeneratorMatrix) [][]byte {
 	numBlocks := (n + blockSize - 1) / blockSize
 	parities := make([][]byte, numBlocks)
 
-	workers := runtime.GOMAXPROCS(0)
-	if workers > numBlocks {
-		workers = numBlocks
-	}
-	if workers < 1 {
-		workers = 1
-	}
+	workers := max(min(runtime.GOMAXPROCS(0), numBlocks), 1)
 
 	masks := buildParityMasks(g)
 	p := g.ParityBits()
 
 	var wg sync.WaitGroup
 	chunk := (numBlocks + workers - 1) / workers
-	for w := 0; w < workers; w++ {
+	for w := range workers {
 		start := w * chunk
-		end := start + chunk
-		if end > numBlocks {
-			end = numBlocks
-		}
+		end := min(start+chunk, numBlocks)
 		if start >= end {
 			continue
 		}
@@ -140,10 +149,7 @@ func ComputeBlockParity(bits []byte, g GeneratorMatrix) [][]byte {
 			scratch := make([]byte, p)
 			for bi := startBlk; bi < endBlk; bi++ {
 				bs := bi * blockSize
-				be := bs + blockSize
-				if be > n {
-					be = n
-				}
+				be := min(bs+blockSize, n)
 				out := masks.parityInto(bits[bs:be], words, scratch)
 				pb := make([]byte, p)
 				copy(pb, out)
@@ -180,12 +186,9 @@ func ReconcileBlocks(ownBits []byte, ownParity, peerParity [][]byte, blockSize i
 
 	kept := make([]bool, numBlocks)
 	var survivingLen, discardedLen int
-	for bi := 0; bi < numBlocks; bi++ {
+	for bi := range numBlocks {
 		bs := bi * blockSize
-		be := bs + blockSize
-		if be > n {
-			be = n
-		}
+		be := min(bs+blockSize, n)
 		blen := be - bs
 		ok := parityEqual(ownParity[bi], peerParity[bi])
 		kept[bi] = ok
@@ -199,12 +202,9 @@ func ReconcileBlocks(ownBits []byte, ownParity, peerParity [][]byte, blockSize i
 	res.Surviving = make([]byte, 0, survivingLen)
 	res.Discarded = make([]byte, 0, discardedLen)
 
-	for bi := 0; bi < numBlocks; bi++ {
+	for bi := range numBlocks {
 		bs := bi * blockSize
-		be := bs + blockSize
-		if be > n {
-			be = n
-		}
+		be := min(bs+blockSize, n)
 		if kept[bi] {
 			res.BlocksKept++
 			res.Surviving = append(res.Surviving, ownBits[bs:be]...)

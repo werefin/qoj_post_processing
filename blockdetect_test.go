@@ -46,6 +46,49 @@ func TestParityCollision(t *testing.T) {
 	}
 }
 
+// TestCascadeCatchesEx3Collision: A and B collide under Ex3 alone (same
+// parity despite differing by 3 bits), but a small G2 tells them apart
+func TestCascadeCatchesEx3Collision(t *testing.T) {
+	a := []byte{0, 0, 0, 0, 0, 0}
+	b := []byte{0, 0, 1, 0, 1, 1}
+
+	masks := buildParityMasks(GeneratorMatrixEx3)
+	words := make([]uint64, masks.words)
+	pa := append([]byte(nil), masks.parityInto(a, words, make([]byte, 3))...)
+	pb := masks.parityInto(b, words, make([]byte, 3))
+	if !parityEqual(pa, pb) {
+		t.Fatalf("expected A and B to collide under Ex3 alone, got %v and %v", pa, pb)
+	}
+
+	g2 := GeneratorMatrix{
+		{1, 0, 0, 0, 0, 0},
+		{0, 0, 1, 0, 0, 0},
+	}
+	cascaded, err := CascadeGeneratorMatrices(GeneratorMatrixEx3, g2)
+	if err != nil {
+		t.Fatalf("CascadeGeneratorMatrices: %v", err)
+	}
+
+	res := BlockErrorDetect(a, b, cascaded)
+	if res.BlocksKept != 0 || res.BlocksDropped != 1 {
+		t.Fatalf("expected the cascade to catch the collision and drop the block, got kept=%d dropped=%d", res.BlocksKept, res.BlocksDropped)
+	}
+}
+
+func TestCascadeGeneratorMatricesRejectsMismatchedBlockSize(t *testing.T) {
+	_, err := CascadeGeneratorMatrices(GeneratorMatrixEx1, GeneratorMatrixEx3)
+	if err == nil {
+		t.Fatal("expected an error for mismatched block sizes (m=4 vs m=6)")
+	}
+}
+
+func TestCascadeGeneratorMatricesRejectsNoRemainingSecret(t *testing.T) {
+	_, err := CascadeGeneratorMatrices(GeneratorMatrixEx1, GeneratorMatrixEx2)
+	if err == nil {
+		t.Fatal("expected an error: Ex1+Ex2 leak 6 parity bits from a 4-bit block")
+	}
+}
+
 func TestBlockErrorDetectDropsErroredBlocksOnly(t *testing.T) {
 	g := GeneratorMatrixEx3
 	blockSize := g.BlockSize() // 6, 100% 2-bit-error detection

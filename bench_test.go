@@ -14,24 +14,21 @@ func benchInputs(n, l int) (x, seed []byte) {
 
 func BenchmarkToeplitzNaive_4kx2k(b *testing.B) {
 	x, seed := benchInputs(4096, 2048)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		toeplitzHashNaive(x, seed, 2048)
 	}
 }
 
 func BenchmarkToeplitzFast_4kx2k(b *testing.B) {
 	x, seed := benchInputs(4096, 2048)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		toeplitzHashFast(x, seed, 2048)
 	}
 }
 
 func BenchmarkToeplitzFast_100kx50k(b *testing.B) {
 	x, seed := benchInputs(100000, 50000)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		toeplitzHashFast(x, seed, 50000)
 	}
 }
@@ -42,7 +39,7 @@ func BenchmarkToeplitzImpl_4kx2k(b *testing.B) {
 	x, seed := benchInputs(4096, 2048)
 	for name, impl := range toeplitzImpls {
 		b.Run(name, func(b *testing.B) {
-			for i := 0; i < b.N; i++ {
+			for b.Loop() {
 				impl(x, seed, 2048)
 			}
 		})
@@ -53,7 +50,7 @@ func BenchmarkToeplitzImpl_100kx50k(b *testing.B) {
 	x, seed := benchInputs(100000, 50000)
 	for name, impl := range toeplitzImpls {
 		b.Run(name, func(b *testing.B) {
-			for i := 0; i < b.N; i++ {
+			for b.Loop() {
 				impl(x, seed, 50000)
 			}
 		})
@@ -65,8 +62,7 @@ func BenchmarkBlockErrorDetect_1M(b *testing.B) {
 	n := 1_000_000
 	alice := randomBits(r, n)
 	bob := append([]byte(nil), alice...)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		BlockErrorDetect(alice, bob, GeneratorMatrixEx3)
 	}
 }
@@ -76,8 +72,7 @@ func BenchmarkCRCVerify_1M(b *testing.B) {
 	n := 1_000_000
 	alice := randomBits(r, n)
 	bob := append([]byte(nil), alice...)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		CRCVerify(alice, bob, 2048)
 	}
 }

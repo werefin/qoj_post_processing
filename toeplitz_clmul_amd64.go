@@ -63,12 +63,7 @@ func schoolbookCLMUL(xWords, seedWords []uint64, prodWords int) []uint64 {
 	if outerLen*len(inner) < minParallelCLMULWork {
 		workers = 1
 	}
-	if workers > outerLen {
-		workers = outerLen
-	}
-	if workers < 1 {
-		workers = 1
-	}
+	workers = max(min(workers, outerLen), 1)
 	if workers == 1 {
 		product := make([]uint64, prodWords)
 		clmulAccumulate(outer, inner, product, 0, outerLen)
@@ -78,12 +73,9 @@ func schoolbookCLMUL(xWords, seedWords []uint64, prodWords int) []uint64 {
 	partials := make([][]uint64, workers)
 	var wg sync.WaitGroup
 	chunk := (outerLen + workers - 1) / workers
-	for w := 0; w < workers; w++ {
+	for w := range workers {
 		start := w * chunk
-		end := start + chunk
-		if end > outerLen {
-			end = outerLen
-		}
+		end := min(start+chunk, outerLen)
 		if start >= end {
 			continue
 		}

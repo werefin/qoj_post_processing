@@ -59,22 +59,13 @@ func CRCVerify(alice, bob []byte, chunkSize int) CRCVerifyResult {
 	numChunks := (n + chunkSize - 1) / chunkSize
 	outcomes := make([]chunkOutcome, numChunks)
 
-	workers := runtime.GOMAXPROCS(0)
-	if workers > numChunks {
-		workers = numChunks
-	}
-	if workers < 1 {
-		workers = 1
-	}
+	workers := max(min(runtime.GOMAXPROCS(0), numChunks), 1)
 
 	var wg sync.WaitGroup
 	chunkOfWork := (numChunks + workers - 1) / workers
-	for w := 0; w < workers; w++ {
+	for w := range workers {
 		start := w * chunkOfWork
-		end := start + chunkOfWork
-		if end > numChunks {
-			end = numChunks
-		}
+		end := min(start+chunkOfWork, numChunks)
 		if start >= end {
 			continue
 		}
@@ -84,10 +75,7 @@ func CRCVerify(alice, bob []byte, chunkSize int) CRCVerifyResult {
 			var aBuf, bBuf []byte
 			for ci := startC; ci < endC; ci++ {
 				cs := ci * chunkSize
-				ce := cs + chunkSize
-				if ce > n {
-					ce = n
-				}
+				ce := min(cs+chunkSize, n)
 				aBuf = bitsToBytesInto(alice[cs:ce], aBuf)
 				bBuf = bitsToBytesInto(bob[cs:ce], bBuf)
 				aCRC := crc32.ChecksumIEEE(aBuf)
@@ -102,12 +90,9 @@ func CRCVerify(alice, bob []byte, chunkSize int) CRCVerifyResult {
 	res.ChunksTotal = numChunks
 
 	var survivingLen, discardedLen int
-	for ci := 0; ci < numChunks; ci++ {
+	for ci := range numChunks {
 		cs := ci * chunkSize
-		ce := cs + chunkSize
-		if ce > n {
-			ce = n
-		}
+		ce := min(cs+chunkSize, n)
 		clen := ce - cs
 		if outcomes[ci].kept {
 			survivingLen += clen
@@ -121,12 +106,9 @@ func CRCVerify(alice, bob []byte, chunkSize int) CRCVerifyResult {
 	res.DiscardedAlice = make([]byte, 0, discardedLen)
 	res.DiscardedBob = make([]byte, 0, discardedLen)
 
-	for ci := 0; ci < numChunks; ci++ {
+	for ci := range numChunks {
 		cs := ci * chunkSize
-		ce := cs + chunkSize
-		if ce > n {
-			ce = n
-		}
+		ce := min(cs+chunkSize, n)
 		if outcomes[ci].kept {
 			res.ChunksKept++
 			res.SurvivingAlice = append(res.SurvivingAlice, alice[cs:ce]...)
