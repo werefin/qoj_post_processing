@@ -15,19 +15,33 @@ type CRCVerifyResult struct {
 	ChunksTotal    int
 	ChunksKept     int
 	ChunksDropped  int
-	LeakedBits     int // classical-channel bits spent announcing CRCs (32 bits/chunk)
+	LeakedBits     int // classical-channel bits spent announcing CRCs of surviving chunks (32 bits/chunk)
 }
 
 // bitsToBytes packs 0/1 bits (MSB-first) into bytes, zero-padding the
 // last byte - both sides pad identically so it never causes a mismatch
 func bitsToBytes(bits []byte) []byte {
-	out := make([]byte, (len(bits)+7)/8)
-	for i, b := range bits {
-		if b != 0 {
-			out[i/8] |= 1 << uint(7-i%8)
+	return bitsToBytesInto(bits, nil)
+}
+
+// bitsToBytesInto is bitsToBytes but reuses dst's backing array instead
+// of allocating, so a worker can pack every chunk through one buffer
+func bitsToBytesInto(bits []byte, dst []byte) []byte {
+	need := (len(bits) + 7) / 8
+	if cap(dst) < need {
+		dst = make([]byte, need)
+	} else {
+		dst = dst[:need]
+		for i := range dst {
+			dst[i] = 0
 		}
 	}
-	return out
+	for i, b := range bits {
+		if b != 0 {
+			dst[i/8] |= 1 << uint(7-i%8)
+		}
+	}
+	return dst
 }
 
 type chunkOutcome struct {
@@ -67,14 +81,17 @@ func CRCVerify(alice, bob []byte, chunkSize int) CRCVerifyResult {
 		wg.Add(1)
 		go func(startC, endC int) {
 			defer wg.Done()
+			var aBuf, bBuf []byte
 			for ci := startC; ci < endC; ci++ {
 				cs := ci * chunkSize
 				ce := cs + chunkSize
 				if ce > n {
 					ce = n
 				}
-				aCRC := crc32.ChecksumIEEE(bitsToBytes(alice[cs:ce]))
-				bCRC := crc32.ChecksumIEEE(bitsToBytes(bob[cs:ce]))
+				aBuf = bitsToBytesInto(alice[cs:ce], aBuf)
+				bBuf = bitsToBytesInto(bob[cs:ce], bBuf)
+				aCRC := crc32.ChecksumIEEE(aBuf)
+				bCRC := crc32.ChecksumIEEE(bBuf)
 				outcomes[ci] = chunkOutcome{kept: aCRC == bCRC, aCRC: aCRC, bCRC: bCRC}
 			}
 		}(start, end)
@@ -94,10 +111,10 @@ func CRCVerify(alice, bob []byte, chunkSize int) CRCVerifyResult {
 		clen := ce - cs
 		if outcomes[ci].kept {
 			survivingLen += clen
+			res.LeakedBits += 32
 		} else {
 			discardedLen += clen
 		}
-		res.LeakedBits += 32
 	}
 	res.SurvivingAlice = make([]byte, 0, survivingLen)
 	res.SurvivingBob = make([]byte, 0, survivingLen)

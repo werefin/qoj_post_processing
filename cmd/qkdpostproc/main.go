@@ -13,6 +13,33 @@ import (
 	qkd "qkdpostproc"
 )
 
+// ANSI color codes for status tags, arnika-style: raw escapes inlined at the
+// call site rather than pulled in via a color library
+const (
+	colorReset = "\033[0m"
+	colorOK    = "\033[32m"
+	colorWarn  = "\033[33m"
+	colorErr   = "\033[31m"
+)
+
+const labelWidth = 32
+
+// section prints a plain title line ahead of a group of fields
+func section(title string) {
+	fmt.Printf("\n%s\n", title)
+}
+
+// field prints one label:value row with the label padded to a fixed column,
+// so every section lines up regardless of label length
+func field(label, format string, args ...any) {
+	fmt.Printf("  %-*s"+format+"\n", append([]any{labelWidth, label + ":"}, args...)...)
+}
+
+// tag renders a colored [LABEL] status marker, e.g. [OK]/[WARN]/[ERROR]
+func tag(color, label string) string {
+	return fmt.Sprintf("%s[%s]%s", color, label, colorReset)
+}
+
 // simulate generates correlated Alice/Bob click streams with configurable
 // error, basis-mismatch, jitter and multi-photon rates - swap for real logs
 func simulate(n int, errRate, multiPhotonRate float64, jitterPS int64, seed int64) ([]qkd.DetectionEvent, []qkd.DetectionEvent) {
@@ -56,7 +83,16 @@ func main() {
 	seed := flag.Int64("seed", 1, "PRNG seed for the simulation")
 	flag.Parse()
 
-	fmt.Printf("qkdpostproc  (GOMAXPROCS=%d)\n\n", runtime.GOMAXPROCS(0))
+	section("qkdpostproc run configuration:")
+	field("Raw attempts", "%d", *n)
+	field("Intrinsic error rate", "%.4f", *errRate)
+	field("Multi-photon rate", "%.4f", *mpRate)
+	field("Coincidence window", "%d ps", *windowPS)
+	field("Detector jitter", "%d ps", *jitterPS)
+	field("Block size (step 2)", "%d bits", *blockSize)
+	field("Chunk size (step 3)", "%d bits", *chunkSize)
+	field("PRNG seed", "%d", *seed)
+	field("GOMAXPROCS", "%d", runtime.GOMAXPROCS(0))
 
 	aliceEv, bobEv := simulate(*n, *errRate, *mpRate, *jitterPS, *seed)
 
@@ -70,34 +106,42 @@ func main() {
 	res, err := qkd.Run(aliceEv, bobEv, cfg)
 	elapsed := time.Since(t0)
 	if err != nil {
-		fmt.Println("pipeline error:", err)
+		fmt.Printf("\n%s pipeline error: %v\n", tag(colorErr, "ERROR"), err)
 		return
 	}
 
-	fmt.Printf("Step 1 - Sifting\n")
-	fmt.Printf("  raw attempts:      %d\n", *n)
-	fmt.Printf("  sifted bits:       %d\n\n", res.SiftedBits)
+	section("(1): sifting")
+	field("Raw attempts", "%d", *n)
+	field("Sifted bits", "%d", res.SiftedBits)
 
 	bd := res.BlockDetect
-	fmt.Printf("Step 2 - Error Detection (block=%d bits)\n", *blockSize)
-	fmt.Printf("  blocks total:      %d\n", bd.BlocksTotal)
-	fmt.Printf("  blocks kept:       %d\n", bd.BlocksKept)
-	fmt.Printf("  blocks dropped:    %d\n", bd.BlocksDropped)
-	fmt.Printf("  bits surviving:    %d\n", len(bd.SurvivingAlice))
-	fmt.Printf("  bits leaked (syndromes): %d\n\n", bd.LeakedBits)
+	blockDiscardFrac := 0.0
+	if res.SiftedBits > 0 {
+		blockDiscardFrac = float64(len(bd.DiscardedAlice)) / float64(res.SiftedBits)
+	}
+	blockTag := tag(colorOK, "OK")
+	if blockDiscardFrac > 0.5 {
+		blockTag = tag(colorWarn, "WARN")
+	}
+	section(fmt.Sprintf("(2): error detection (block=%d bits)", *blockSize))
+	field("Blocks total", "%d", bd.BlocksTotal)
+	field("Blocks kept", "%d", bd.BlocksKept)
+	field("Blocks dropped", "%d (%.1f%%) "+blockTag, bd.BlocksDropped, blockDiscardFrac*100)
+	field("Bits surviving", "%d", len(bd.SurvivingAlice))
+	field("Bits leaked (syndromes)", "%d", bd.LeakedBits)
 
 	cv := res.CRCVerify
-	fmt.Printf("Step 3 - Error Verification (chunk=%d bits, CRC-32)\n", *chunkSize)
-	fmt.Printf("  chunks total:      %d\n", cv.ChunksTotal)
-	fmt.Printf("  chunks kept:       %d\n", cv.ChunksKept)
-	fmt.Printf("  chunks dropped:    %d\n", cv.ChunksDropped)
-	fmt.Printf("  bits surviving:    %d\n", len(cv.SurvivingAlice))
-	fmt.Printf("  bits leaked (CRCs): %d\n\n", cv.LeakedBits)
+	section(fmt.Sprintf("(3): error verification (chunk=%d bits, CRC-32)", *chunkSize))
+	field("Chunks total", "%d", cv.ChunksTotal)
+	field("Chunks kept", "%d", cv.ChunksKept)
+	field("Chunks dropped", "%d", cv.ChunksDropped)
+	field("Bits surviving", "%d", len(cv.SurvivingAlice))
+	field("Bits leaked (CRCs)", "%d", cv.LeakedBits)
 
-	fmt.Printf("Step 4 - QBER Calculation\n")
-	fmt.Printf("  sample bits (discarded blocks+chunks): %d\n", res.QBER.SampleBits)
-	fmt.Printf("  error bits in sample:                  %d\n", res.QBER.ErrorBits)
-	fmt.Printf("  QBER estimate:                          %.4f\n\n", res.QBER.QBER)
+	section("(4): QBER calculation")
+	field("Sample bits (discarded)", "%d", res.QBER.SampleBits)
+	field("Error bits in sample", "%d", res.QBER.ErrorBits)
+	field("QBER estimate", "%.4f", res.QBER.QBER)
 
 	residualErr := 0
 	for i := range cv.SurvivingAlice {
@@ -105,21 +149,26 @@ func main() {
 			residualErr++
 		}
 	}
-	fmt.Printf("  (sanity) residual mismatches in cleaned stream: %d / %d\n\n", residualErr, len(cv.SurvivingAlice))
+	sanityTag := tag(colorOK, "OK")
+	if residualErr > 0 {
+		sanityTag = tag(colorErr, "ERROR")
+	}
+	field("Sanity: residual mismatches", "%d / %d "+sanityTag, residualErr, len(cv.SurvivingAlice))
 
 	rate := 0.0
 	if len(cv.SurvivingAlice) > 0 {
 		rate = float64(len(res.FinalKeyBits)) / float64(len(cv.SurvivingAlice))
 	}
-	fmt.Printf("Step 5 - Privacy Amplification\n")
-	fmt.Printf("  input bits (error-free stream):   %d\n", len(cv.SurvivingAlice))
-	fmt.Printf("  classical bits leaked total:      %d\n", res.LeakedBits)
-	fmt.Printf("  distilled secret key length:      %d bits\n", len(res.FinalKeyBits))
-	fmt.Printf("  compression rate:                 %.4f\n", rate)
+	section("(5): privacy amplification")
+	field("Input bits (error-free stream)", "%d", len(cv.SurvivingAlice))
+	field("Classical bits leaked (total)", "%d", res.LeakedBits)
+	field("Distilled secret key length", "%d bits", len(res.FinalKeyBits))
+	field("Compression rate", "%.4f", rate)
 	if len(res.FinalKeyBits) > 0 {
-		fmt.Printf("  secret key (hex):                  %s\n", hex.EncodeToString(res.FinalKeyBytes))
+		field("Secret key (hex)", "%s "+tag(colorOK, "OK"), hex.EncodeToString(res.FinalKeyBytes))
 	} else {
-		fmt.Printf("  secret key: (empty - QBER/leakage too high to distil a secure key at this length)\n")
+		field("Secret key", "(empty) "+tag(colorWarn, "WARN")+" QBER/leakage too high to distil a key at this length")
 	}
-	fmt.Printf("\nwall time: %s\n", elapsed)
+	section("done")
+	field("Wall time", "%s", elapsed)
 }

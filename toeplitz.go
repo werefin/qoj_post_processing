@@ -103,7 +103,14 @@ func toeplitzHashPopcount(x []byte, seed []byte, l int) []byte {
 
 	out := make([]byte, l)
 
+	// below this many word-comparisons, goroutine overhead costs more
+	// than the parallel loop saves
+	const minParallelPopcountWork = 4000000
+
 	workers := runtime.GOMAXPROCS(0)
+	if l*numWords < minParallelPopcountWork {
+		workers = 1
+	}
 	if workers > l {
 		workers = l
 	}

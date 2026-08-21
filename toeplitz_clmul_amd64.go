@@ -46,6 +46,10 @@ func extractBitsInto(words []uint64, bitOffset int, dst []byte) {
 	}
 }
 
+// minParallelCLMULWork is the outer*inner word-product size below which
+// goroutine/allocation overhead costs more than parallelizing saves
+const minParallelCLMULWork = 16384
+
 // schoolbookCLMUL returns the GF(2) polynomial product of xWords and
 // seedWords, split across a worker pool along the larger operand
 func schoolbookCLMUL(xWords, seedWords []uint64, prodWords int) []uint64 {
@@ -56,6 +60,9 @@ func schoolbookCLMUL(xWords, seedWords []uint64, prodWords int) []uint64 {
 	outerLen := len(outer)
 
 	workers := runtime.GOMAXPROCS(0)
+	if outerLen*len(inner) < minParallelCLMULWork {
+		workers = 1
+	}
 	if workers > outerLen {
 		workers = outerLen
 	}

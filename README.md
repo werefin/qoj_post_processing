@@ -40,7 +40,7 @@ res.FinalKeyBytes // ready to feed into your KMS
 
 ### Performance
 
-Steps 2 and 3 split per-block/per-chunk work across a `runtime.GOMAXPROCS(0)` worker pool. Step 5's Toeplitz hash is the quadratic-shaped bottleneck (`O(ln)`): on amd64 with `PCLMULQDQ` (checked at runtime), the whole output is one hardware carry-less-multiply polynomial product instead of a popcount per output bit --> `2-10x` over the portable `POPCNT` fallback used everywhere else, both parallelized. `toeplitzHashNaive` is kept only as a correctness oracle for tests, never use it in production. Run `make bench` for numbers on your machine.
+Steps 2 and 3 split per-block/per-chunk work across a `runtime.GOMAXPROCS(0)` worker pool, reusing one scratch buffer per worker instead of allocating per block/chunk. Step 5's Toeplitz hash is the quadratic-shaped bottleneck (`O(ln)`): on amd64 with `PCLMULQDQ` (checked at runtime), the whole output is one hardware carry-less-multiply polynomial product instead of a popcount per output bit --> `2-10x` over the portable `POPCNT` fallback used everywhere else. Both parallelize across workers, but only past a measured work-size threshold - below it (typical batch sizes: a few thousand bits) goroutine overhead costs more than it saves, so it just runs single-threaded. `toeplitzHashNaive` is kept only as a correctness oracle for tests, never use it in production. Run `make bench` for numbers on your machine.
 
 ### Tuning
 
