@@ -1,5 +1,5 @@
 // Command tuneblock sweeps step 2's Hamming block size over one fixed
-// simulated click batch and reports which size keeps the most key
+// simulated click batch and reports which size gives the highest key rate
 package main
 
 import (
@@ -49,6 +49,8 @@ type row struct {
 	discardFrac    float64
 	survivingStep2 int
 	finalKeyBits   int
+	keyRate        float64 // final key bits per raw attempt
+	keysPerBatch   int     // whole keyBits-sized keys this batch yields
 }
 
 func main() {
@@ -62,6 +64,7 @@ func main() {
 	from := flag.Int("from", 4, "smallest block size to try")
 	to := flag.Int("to", 128, "largest block size to try")
 	step := flag.Int("step", 4, "block size increment")
+	keyBits := flag.Int("keybits", 256, "key size you'll actually consume, for the keys-per-batch column")
 	flag.Parse()
 
 	if *from <= 0 || *to < *from || *step <= 0 {
@@ -86,13 +89,16 @@ func main() {
 		if res.SiftedBits > 0 {
 			discardFrac = float64(len(bd.DiscardedAlice)) / float64(res.SiftedBits)
 		}
+		finalBits := len(res.FinalKeyBits)
 		rows = append(rows, row{
 			blockSize:      bs,
 			blocksTotal:    bd.BlocksTotal,
 			blocksDropped:  bd.BlocksDropped,
 			discardFrac:    discardFrac,
 			survivingStep2: len(bd.SurvivingAlice),
-			finalKeyBits:   len(res.FinalKeyBits),
+			finalKeyBits:   finalBits,
+			keyRate:        float64(finalBits) / float64(*n),
+			keysPerBatch:   finalBits / *keyBits,
 		})
 	}
 	if len(rows) == 0 {
@@ -100,33 +106,24 @@ func main() {
 		return
 	}
 
-	bestKey, minDiscard := 0, 0
+	bestRate := 0
 	for i, r := range rows {
-		if r.finalKeyBits > rows[bestKey].finalKeyBits {
-			bestKey = i
-		}
-		if r.discardFrac < rows[minDiscard].discardFrac {
-			minDiscard = i
+		if r.keyRate > rows[bestRate].keyRate {
+			bestRate = i
 		}
 	}
 
-	fmt.Printf("block | blocks(total/dropped) | step2 discard%% | step2 surviving | final key bits\n")
+	fmt.Printf("block | blocks(total/dropped) | step2 discard%% | key rate (bits/attempt) | %d-bit keys/batch\n", *keyBits)
 	for i, r := range rows {
 		mark := ""
-		if i == bestKey {
-			mark += " [best key]"
+		if i == bestRate {
+			mark = " [best rate]"
 		}
-		if i == minDiscard {
-			mark += " [min discard]"
-		}
-		fmt.Printf("%5d | %6d / %-7d | %13.2f%% | %16d | %14d%s\n",
-			r.blockSize, r.blocksTotal, r.blocksDropped, r.discardFrac*100, r.survivingStep2, r.finalKeyBits, mark)
+		fmt.Printf("%5d | %6d / %-7d | %13.2f%% | %22.5f | %14d%s\n",
+			r.blockSize, r.blocksTotal, r.blocksDropped, r.discardFrac*100, r.keyRate, r.keysPerBatch, mark)
 	}
 
-	fmt.Printf("\nlongest final key: block=%d (%d bits)\n", rows[bestKey].blockSize, rows[bestKey].finalKeyBits)
-	fmt.Printf("fewest step2 discards: block=%d (%.2f%%)\n", rows[minDiscard].blockSize, rows[minDiscard].discardFrac*100)
-	if bestKey != minDiscard {
-		fmt.Printf("\nthese differ because smaller blocks survive more often but leak\n")
-		fmt.Printf("proportionally more parity bits - block=%d is the actual optimum\n", rows[bestKey].blockSize)
-	}
+	best := rows[bestRate]
+	fmt.Printf("\nhighest key rate: block=%d (%.5f bits/attempt, %d %d-bit keys from this batch)\n",
+		best.blockSize, best.keyRate, best.keysPerBatch, *keyBits)
 }

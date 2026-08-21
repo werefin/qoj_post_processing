@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sweeps step 2's block size and reports which one yields the longest key
+# sweeps step 2's block size and reports which one gives the highest key rate
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
