@@ -1,6 +1,7 @@
 package qkdpostproc
 
 import (
+	"bytes"
 	"math/rand"
 	"testing"
 )
@@ -44,5 +45,43 @@ func TestCRCVerifyIdenticalStreamsAllKept(t *testing.T) {
 	}
 	if len(res.SurvivingAlice) != n {
 		t.Fatalf("expected all %d bits to survive, got %d", n, len(res.SurvivingAlice))
+	}
+}
+
+// TestCRCSplitMatchesCombined: ComputeChunkCRC + ReconcileChunks run per
+// side give the same result as the combined convenience wrapper
+func TestCRCSplitMatchesCombined(t *testing.T) {
+	r := rand.New(rand.NewSource(9))
+	n := 5001
+	chunkSize := 300
+	alice := make([]byte, n)
+	bob := make([]byte, n)
+	for i := range alice {
+		b := byte(r.Intn(2))
+		alice[i] = b
+		bob[i] = b
+		if r.Float64() < 0.01 {
+			bob[i] ^= 1
+		}
+	}
+
+	want := CRCVerify(alice, bob, chunkSize)
+
+	aliceCRC := ComputeChunkCRC(alice, chunkSize)
+	bobCRC := ComputeChunkCRC(bob, chunkSize)
+	aliceRes := ReconcileChunks(alice, aliceCRC, bobCRC, chunkSize)
+	bobRes := ReconcileChunks(bob, bobCRC, aliceCRC, chunkSize)
+
+	if !bytes.Equal(aliceRes.Surviving, want.SurvivingAlice) {
+		t.Fatal("Alice's split surviving bits diverged from the combined result")
+	}
+	if !bytes.Equal(bobRes.Surviving, want.SurvivingBob) {
+		t.Fatal("Bob's split surviving bits diverged from the combined result")
+	}
+	if !bytes.Equal(aliceRes.Discarded, want.DiscardedAlice) {
+		t.Fatal("Alice's split discarded bits diverged from the combined result")
+	}
+	if aliceRes.LeakedBits != want.LeakedBits {
+		t.Fatalf("expected %d leaked bits, got %d", want.LeakedBits, aliceRes.LeakedBits)
 	}
 }

@@ -44,20 +44,15 @@ func bitsToBytesInto(bits []byte, dst []byte) []byte {
 	return dst
 }
 
-type chunkOutcome struct {
-	kept       bool
-	aCRC, bCRC uint32
-}
-
-// CRCVerify re-checks step 2's survivors over larger CRC-32 chunks,
-// catching >=4-bit errors a Hamming block could miss, in parallel
-func CRCVerify(alice, bob []byte, chunkSize int) CRCVerifyResult {
+// ComputeChunkCRC computes the CRC-32 of every chunkSize-bit chunk, using
+// only this side's own bits - a peer only ever needs the result
+func ComputeChunkCRC(bits []byte, chunkSize int) []uint32 {
 	if chunkSize <= 0 {
 		panic("chunkSize must be > 0")
 	}
-	n := len(alice)
+	n := len(bits)
 	numChunks := (n + chunkSize - 1) / chunkSize
-	outcomes := make([]chunkOutcome, numChunks)
+	crcs := make([]uint32, numChunks)
 
 	workers := max(min(runtime.GOMAXPROCS(0), numChunks), 1)
 
@@ -72,52 +67,89 @@ func CRCVerify(alice, bob []byte, chunkSize int) CRCVerifyResult {
 		wg.Add(1)
 		go func(startC, endC int) {
 			defer wg.Done()
-			var aBuf, bBuf []byte
+			var buf []byte
 			for ci := startC; ci < endC; ci++ {
 				cs := ci * chunkSize
 				ce := min(cs+chunkSize, n)
-				aBuf = bitsToBytesInto(alice[cs:ce], aBuf)
-				bBuf = bitsToBytesInto(bob[cs:ce], bBuf)
-				aCRC := crc32.ChecksumIEEE(aBuf)
-				bCRC := crc32.ChecksumIEEE(bBuf)
-				outcomes[ci] = chunkOutcome{kept: aCRC == bCRC, aCRC: aCRC, bCRC: bCRC}
+				buf = bitsToBytesInto(bits[cs:ce], buf)
+				crcs[ci] = crc32.ChecksumIEEE(buf)
 			}
 		}(start, end)
 	}
 	wg.Wait()
+	return crcs
+}
 
-	var res CRCVerifyResult
+// ChunkReconcileResult summarizes one side's outcome of comparing its own
+// chunk CRCs against a peer's, without ever needing the peer's bits
+type ChunkReconcileResult struct {
+	Surviving     []byte
+	Discarded     []byte
+	ChunksTotal   int
+	ChunksKept    int
+	ChunksDropped int
+	LeakedBits    int // classical-channel bits spent announcing CRCs of surviving chunks
+}
+
+// ReconcileChunks drops any chunk whose own CRC disagrees with the
+// peer's - never needs to know the peer's raw bits
+func ReconcileChunks(ownBits []byte, ownCRC, peerCRC []uint32, chunkSize int) ChunkReconcileResult {
+	if len(ownCRC) != len(peerCRC) {
+		panic("ownCRC and peerCRC must cover the same number of chunks")
+	}
+	numChunks := len(ownCRC)
+	n := len(ownBits)
+
+	var res ChunkReconcileResult
 	res.ChunksTotal = numChunks
 
+	kept := make([]bool, numChunks)
 	var survivingLen, discardedLen int
 	for ci := range numChunks {
 		cs := ci * chunkSize
 		ce := min(cs+chunkSize, n)
 		clen := ce - cs
-		if outcomes[ci].kept {
+		ok := ownCRC[ci] == peerCRC[ci]
+		kept[ci] = ok
+		if ok {
 			survivingLen += clen
 			res.LeakedBits += 32
 		} else {
 			discardedLen += clen
 		}
 	}
-	res.SurvivingAlice = make([]byte, 0, survivingLen)
-	res.SurvivingBob = make([]byte, 0, survivingLen)
-	res.DiscardedAlice = make([]byte, 0, discardedLen)
-	res.DiscardedBob = make([]byte, 0, discardedLen)
+	res.Surviving = make([]byte, 0, survivingLen)
+	res.Discarded = make([]byte, 0, discardedLen)
 
 	for ci := range numChunks {
 		cs := ci * chunkSize
 		ce := min(cs+chunkSize, n)
-		if outcomes[ci].kept {
+		if kept[ci] {
 			res.ChunksKept++
-			res.SurvivingAlice = append(res.SurvivingAlice, alice[cs:ce]...)
-			res.SurvivingBob = append(res.SurvivingBob, bob[cs:ce]...)
+			res.Surviving = append(res.Surviving, ownBits[cs:ce]...)
 		} else {
 			res.ChunksDropped++
-			res.DiscardedAlice = append(res.DiscardedAlice, alice[cs:ce]...)
-			res.DiscardedBob = append(res.DiscardedBob, bob[cs:ce]...)
+			res.Discarded = append(res.Discarded, ownBits[cs:ce]...)
 		}
 	}
 	return res
+}
+
+// CRCVerify is a convenience wrapper for simulation and testing
+// use ComputeChunkCRC + ReconcileChunks directly to run each side apart
+func CRCVerify(alice, bob []byte, chunkSize int) CRCVerifyResult {
+	aliceCRC := ComputeChunkCRC(alice, chunkSize)
+	bobCRC := ComputeChunkCRC(bob, chunkSize)
+	aliceRes := ReconcileChunks(alice, aliceCRC, bobCRC, chunkSize)
+	bobRes := ReconcileChunks(bob, bobCRC, aliceCRC, chunkSize)
+	return CRCVerifyResult{
+		SurvivingAlice: aliceRes.Surviving,
+		SurvivingBob:   bobRes.Surviving,
+		DiscardedAlice: aliceRes.Discarded,
+		DiscardedBob:   bobRes.Discarded,
+		ChunksTotal:    aliceRes.ChunksTotal,
+		ChunksKept:     aliceRes.ChunksKept,
+		ChunksDropped:  aliceRes.ChunksDropped,
+		LeakedBits:     aliceRes.LeakedBits, // same 32-bits-per-kept-chunk count on both sides
+	}
 }

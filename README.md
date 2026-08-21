@@ -48,6 +48,16 @@ The sifted key is split into fixed `m`-bit blocks; at each side, `p` parity bits
 
 Any single matrix has blind spots: two different blocks can land on the same parity (a collision), so an error between them goes undetected. `CascadeGeneratorMatrices(g1, g2)` stacks a second matrix's rows onto the first, so a block only survives if it matches under *both* --> catching errors invisible to `g1` alone, at essentially no extra cost since it reuses the exact same word-packed pass instead of a second scan. Needs `g1`/`g2` to share a block size and `p1+p2 < m`, or the combined leak would exceed the block and leave no secret.
 
+### Running as two independent nodes
+
+`Sift`, `BlockErrorDetect`, and `CRCVerify` are convenience wrappers that run both sides in one call, for simulation and testing. Each has a split form that never needs the peer's secret bits, only public metadata or already-computed check values, so Alice and Bob can run as two separate processes exchanging only what the protocol requires:
+
+- **Sifting**: timestamps and bases aren't secret. `StripBit(events)` gives the public `[]PublicEvent` view; exchange it, then both sides call `MatchCoincidences(alicePublic, bobPublic, windowPS)` locally and get identical `[]MatchedPair` back - no reconciliation step needed, each side just reads its own bit at its own index.
+- **Block detection**: `ComputeBlockParity(ownBits, g)` locally, exchange parity, `ReconcileBlocks(ownBits, ownParity, peerParity, blockSize)` locally.
+- **CRC verification**: `ComputeChunkCRC(ownBits, chunkSize)` locally, exchange CRCs, `ReconcileChunks(ownBits, ownCRC, peerCRC, chunkSize)` locally.
+
+`Run()` still uses the combined wrappers end-to-end; wire the split calls together yourself over your own authenticated channel if you need Alice and Bob as separate processes.
+
 ### Performance
 
 Steps 2 and 3 split per-block/per-chunk work across a `runtime.GOMAXPROCS(0)` worker pool, reusing one scratch buffer per worker instead of allocating per block/chunk. Step 2 also precomputes each row of `G` once as a bitmask, so every block's parity is `p` branch-free AND+POPCNT word passes instead of an `O(pm)` per-bit scan. Step 5's Toeplitz hash is the quadratic-shaped bottleneck (`O(ln)`): on amd64 with `PCLMULQDQ` (checked at runtime), the whole output is one hardware carry-less-multiply polynomial product instead of a popcount per output bit --> `2-10x` over the portable `POPCNT` fallback used everywhere else. Both parallelize across workers, but only past a measured work-size threshold --> below it (typical batch sizes: a few thousand bits) goroutine overhead costs more than it saves, so it just runs single-threaded. `toeplitzHashNaive` is kept only as a correctness oracle for tests, never use it in production. Run `make bench` for numbers on your machine.
