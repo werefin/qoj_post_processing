@@ -1,6 +1,7 @@
 package qkdpostproc
 
 import (
+	"math/bits"
 	"runtime"
 	"sync"
 )
@@ -9,7 +10,7 @@ import (
 // extended (SECDED) Hamming syndrome catches every 1/2/3-bit error per block
 
 // hammingRN returns the parity-bit count r and codeword length n = m+r for
-// an m-bit data block - lets callers size scratch buffers once per worker
+// an m-bit data block --> lets callers size scratch buffers once per worker
 func hammingRN(m int) (r, n int) {
 	for (1 << uint(r)) < m+r+1 {
 		r++
@@ -17,54 +18,74 @@ func hammingRN(m int) (r, n int) {
 	return r, m + r
 }
 
-// hammingSyndrome computes the (r+1)-bit syndrome: r Hamming parity
-// bits + 1 overall parity bit, O(r*n) per block
-func hammingSyndrome(dataBits []byte) []byte {
-	m := len(dataBits)
-	if m == 0 {
-		return nil
-	}
-	r, n := hammingRN(m)
-	return hammingSyndromeInto(dataBits, make([]byte, n+1), make([]byte, r+1))
+// hammingMasks precomputes which data bits feed each parity bit for one
+// block size, turning each syndrome into r+1 AND+POPCNT passes
+type hammingMasks struct {
+	r, words int
+	perBit   [][]uint64 // r+1 masks over data-bit words; last is overall parity
 }
 
-// hammingSyndromeInto is hammingSyndrome but writes into caller-supplied
-// scratch buffers (sized via hammingRN) instead of allocating each call
-func hammingSyndromeInto(dataBits []byte, codeword, parity []byte) []byte {
-	m := len(dataBits)
-	if m == 0 {
-		return nil
-	}
+// buildHammingMasks derives the SECDED parity-group membership for an
+// m-bit block once, so every block reuses the same precomputed masks
+func buildHammingMasks(m int) hammingMasks {
 	r, n := hammingRN(m)
 	isPow2 := func(x int) bool { return x != 0 && x&(x-1) == 0 }
-
-	cw := codeword[:n+1] // 1-indexed conceptual codeword
-	di := 0
+	words := (m + 63) / 64
+	masks := make([][]uint64, r+1)
+	for j := range masks {
+		masks[j] = make([]uint64, words)
+	}
+	d := 0
 	for i := 1; i <= n; i++ {
 		if isPow2(i) {
 			continue
 		}
-		cw[i] = dataBits[di]
-		di++
-	}
-
-	pr := parity[:r+1]
-	for j := 0; j < r; j++ {
-		p := 1 << uint(j)
-		var x byte
-		for i := 1; i <= n; i++ {
-			if i&p != 0 && !isPow2(i) {
-				x ^= cw[i]
+		for j := 0; j < r; j++ {
+			if i&(1<<uint(j)) != 0 {
+				masks[j][d>>6] |= 1 << uint(d&63)
 			}
 		}
-		pr[j] = x
+		masks[r][d>>6] |= 1 << uint(d&63) // overall parity: every data bit
+		d++
 	}
-	var overall byte
-	for _, b := range dataBits {
-		overall ^= b
+	return hammingMasks{r: r, words: words, perBit: masks}
+}
+
+// syndromeInto packs dataBits into the words scratch buffer, then computes
+// the r+1 parity bits as AND+POPCNT against the precomputed masks
+func (hm *hammingMasks) syndromeInto(dataBits []byte, words []uint64, parity []byte) []byte {
+	if len(dataBits) == 0 {
+		return nil
 	}
-	pr[r] = overall
+	ws := words[:hm.words]
+	for i := range ws {
+		ws[i] = 0
+	}
+	// shift by b&1 instead of branching on b!=0: near-random dataBits
+	// makes a branch here mispredict constantly --> this was the real cost
+	for i, b := range dataBits {
+		ws[i>>6] |= uint64(b&1) << uint(i&63)
+	}
+	pr := parity[:hm.r+1]
+	for j := 0; j <= hm.r; j++ {
+		mj := hm.perBit[j]
+		var pc int
+		for k, w := range ws {
+			pc += bits.OnesCount64(w & mj[k])
+		}
+		pr[j] = byte(pc & 1)
+	}
 	return pr
+}
+
+// hammingSyndrome computes the (r+1)-bit syndrome, r Hamming parity bits
+// plus 1 overall parity bit --> reference form; BlockErrorDetect reuses masks
+func hammingSyndrome(dataBits []byte) []byte {
+	if len(dataBits) == 0 {
+		return nil
+	}
+	hm := buildHammingMasks(len(dataBits))
+	return hm.syndromeInto(dataBits, make([]uint64, hm.words), make([]byte, hm.r+1))
 }
 
 func syndromesEqual(a, b []byte) bool {
@@ -115,9 +136,19 @@ func BlockErrorDetect(alice, bob []byte, blockSize int) BlockDetectResult {
 		workers = 1
 	}
 
-	// blocks are at most blockSize wide (the last one may be shorter), so
-	// buffers sized for a full block cover every block a worker sees
-	rMax, nMax := hammingRN(blockSize)
+	// masks depend only on block length, so build once and let every
+	// block reuse them; only the final (possibly shorter) block differs
+	mainMasks := buildHammingMasks(blockSize)
+	lastLen := n - (numBlocks-1)*blockSize
+	lastMasks := mainMasks
+	lastIsDifferent := numBlocks > 0 && lastLen != blockSize
+	if lastIsDifferent {
+		lastMasks = buildHammingMasks(lastLen)
+	}
+	rMax := mainMasks.r
+	if lastMasks.r > rMax {
+		rMax = lastMasks.r
+	}
 
 	var wg sync.WaitGroup
 	chunk := (numBlocks + workers - 1) / workers
@@ -133,7 +164,7 @@ func BlockErrorDetect(alice, bob []byte, blockSize int) BlockDetectResult {
 		wg.Add(1)
 		go func(startBlk, endBlk int) {
 			defer wg.Done()
-			codeword := make([]byte, nMax+1)
+			words := make([]uint64, mainMasks.words)
 			aParity := make([]byte, rMax+1)
 			bParity := make([]byte, rMax+1)
 			for bi := startBlk; bi < endBlk; bi++ {
@@ -142,8 +173,12 @@ func BlockErrorDetect(alice, bob []byte, blockSize int) BlockDetectResult {
 				if be > n {
 					be = n
 				}
-				aSynd := hammingSyndromeInto(alice[bs:be], codeword, aParity)
-				bSynd := hammingSyndromeInto(bob[bs:be], codeword, bParity)
+				masks := &mainMasks
+				if lastIsDifferent && bi == numBlocks-1 {
+					masks = &lastMasks
+				}
+				aSynd := masks.syndromeInto(alice[bs:be], words, aParity)
+				bSynd := masks.syndromeInto(bob[bs:be], words, bParity)
 				outcomes[bi] = blockOutcome{
 					kept:       syndromesEqual(aSynd, bSynd),
 					leakedBits: len(aSynd),
