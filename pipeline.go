@@ -2,9 +2,9 @@ package qkdpostproc
 
 // Config holds the tunable parameters of the post-processing chain
 type Config struct {
-	CoincidenceWindowPS int64 // step 1: max |dt| between Alice/Bob clicks
-	BlockSize           int   // step 2: Hamming block size, in data bits
-	ChunkSize           int   // step 3: CRC chunk size, in bits
+	CoincidenceWindowPS int64           // step 1: max |dt| between Alice/Bob clicks
+	GeneratorMatrix     GeneratorMatrix // step 2: G in the block parity check P = M*G^T
+	ChunkSize           int             // step 3: CRC chunk size, in bits
 }
 
 // Result bundles the outcome of every stage, so callers can inspect
@@ -16,7 +16,7 @@ type Result struct {
 	CRCVerify   CRCVerifyResult
 	QBER        QBERResult
 
-	LeakedBits int // total classical-channel bits spent on syndromes + CRCs
+	LeakedBits int // total classical-channel bits spent on parity + CRCs
 
 	FinalKeyBits  []byte // 0/1 per byte
 	FinalKeyBytes []byte // packed, MSB-first
@@ -38,12 +38,9 @@ func Run(aliceEvents, bobEvents []DetectionEvent, cfg Config) (Result, error) {
 		bobBits[i] = s.BobBit
 	}
 
-	res.BlockDetect = BlockErrorDetect(aliceBits, bobBits, cfg.BlockSize)
+	res.BlockDetect = BlockErrorDetect(aliceBits, bobBits, cfg.GeneratorMatrix)
+	res.QBER = CalculateQBER(res.BlockDetect.DiscardedAlice, res.BlockDetect.DiscardedBob, res.SiftedBits)
 	res.CRCVerify = CRCVerify(res.BlockDetect.SurvivingAlice, res.BlockDetect.SurvivingBob, cfg.ChunkSize)
-	res.QBER = CalculateQBER(
-		res.BlockDetect.DiscardedAlice, res.BlockDetect.DiscardedBob,
-		res.CRCVerify.DiscardedAlice, res.CRCVerify.DiscardedBob,
-	)
 	res.LeakedBits = res.BlockDetect.LeakedBits + res.CRCVerify.LeakedBits
 
 	key, seed, err := PrivacyAmplify(res.CRCVerify.SurvivingAlice, res.QBER.QBER, res.LeakedBits)

@@ -7,28 +7,22 @@ type QBERResult struct {
 	QBER       float64
 }
 
-// CalculateQBER estimates QBER directly from the blocks/chunks discarded
-// in steps 2-3, comparing them bit-for-bit since they carry no secrecy value
-func CalculateQBER(discardedAliceBlocks, discardedBobBlocks, discardedAliceChunks, discardedBobChunks []byte) QBERResult {
-	var errBits, total int
-	count := func(a, b []byte) {
-		n := len(a)
-		if len(b) < n {
-			n = len(b)
-		}
-		for i := 0; i < n; i++ {
-			total++
-			if a[i] != b[i] {
-				errBits++
-			}
+// CalculateQBER: bad bits in the discarded blocks over all bits of the
+// sifted key, faulty and non-faulty blocks combined
+func CalculateQBER(discardedAliceBlocks, discardedBobBlocks []byte, siftedBits int) QBERResult {
+	errBits := 0
+	n := len(discardedAliceBlocks)
+	if len(discardedBobBlocks) < n {
+		n = len(discardedBobBlocks)
+	}
+	for i := 0; i < n; i++ {
+		if discardedAliceBlocks[i] != discardedBobBlocks[i] {
+			errBits++
 		}
 	}
-	count(discardedAliceBlocks, discardedBobBlocks)
-	count(discardedAliceChunks, discardedBobChunks)
-
 	var q float64
-	if total > 0 {
-		q = float64(errBits) / float64(total)
+	if siftedBits > 0 {
+		q = float64(errBits) / float64(siftedBits)
 	}
-	return QBERResult{ErrorBits: errBits, SampleBits: total, QBER: q}
+	return QBERResult{ErrorBits: errBits, SampleBits: siftedBits, QBER: q}
 }

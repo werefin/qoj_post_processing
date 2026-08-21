@@ -1,5 +1,5 @@
-// Command tuneblock sweeps step 2's Hamming block size over one fixed
-// simulated click batch and reports which size gives the highest key rate
+// Command tuneblock compares the three example generator matrices over
+// one fixed simulated batch and reports the highest key rate
 package main
 
 import (
@@ -42,8 +42,19 @@ func simulate(n int, errRate, multiPhotonRate float64, jitterPS int64, seed int6
 	return alice, bob
 }
 
+// matrixNames fixes iteration order; map order is randomized in Go
+var matrixNames = []string{"ex1", "ex2", "ex3"}
+
+var matrices = map[string]qkd.GeneratorMatrix{
+	"ex1": qkd.GeneratorMatrixEx1,
+	"ex2": qkd.GeneratorMatrixEx2,
+	"ex3": qkd.GeneratorMatrixEx3,
+}
+
 type row struct {
+	name           string
 	blockSize      int
+	parityBits     int
 	blocksTotal    int
 	blocksDropped  int
 	discardFrac    float64
@@ -61,27 +72,20 @@ func main() {
 	jitterPS := flag.Int64("jitter", 300, "simulated detector timing jitter in picoseconds")
 	chunkSize := flag.Int("chunk", 2048, "step 3 CRC chunk size, held fixed during the sweep")
 	seed := flag.Int64("seed", 1, "PRNG seed for the simulation")
-	from := flag.Int("from", 4, "smallest block size to try")
-	to := flag.Int("to", 128, "largest block size to try")
-	step := flag.Int("step", 4, "block size increment")
 	keyBits := flag.Int("keybits", 256, "key size you'll actually consume, for the keys-per-batch column")
 	flag.Parse()
 
-	if *from <= 0 || *to < *from || *step <= 0 {
-		fmt.Println("invalid -from/-to/-step")
-		return
-	}
-
 	// one fixed batch reused for every candidate, so the sweep compares
-	// block sizes on identical data rather than fresh noise each time
+	// matrices on identical data rather than fresh noise each time
 	aliceEv, bobEv := simulate(*n, *errRate, *mpRate, *jitterPS, *seed)
 
 	var rows []row
-	for bs := *from; bs <= *to; bs += *step {
-		cfg := qkd.Config{CoincidenceWindowPS: *windowPS, BlockSize: bs, ChunkSize: *chunkSize}
+	for _, name := range matrixNames {
+		g := matrices[name]
+		cfg := qkd.Config{CoincidenceWindowPS: *windowPS, GeneratorMatrix: g, ChunkSize: *chunkSize}
 		res, err := qkd.Run(aliceEv, bobEv, cfg)
 		if err != nil {
-			fmt.Printf("block=%d: error: %v\n", bs, err)
+			fmt.Printf("%s: error: %v\n", name, err)
 			continue
 		}
 		bd := res.BlockDetect
@@ -91,7 +95,9 @@ func main() {
 		}
 		finalBits := len(res.FinalKeyBits)
 		rows = append(rows, row{
-			blockSize:      bs,
+			name:           name,
+			blockSize:      g.BlockSize(),
+			parityBits:     g.ParityBits(),
 			blocksTotal:    bd.BlocksTotal,
 			blocksDropped:  bd.BlocksDropped,
 			discardFrac:    discardFrac,
@@ -113,17 +119,17 @@ func main() {
 		}
 	}
 
-	fmt.Printf("block | blocks(total/dropped) | step2 discard%% | key rate (bits/attempt) | %d-bit keys/batch\n", *keyBits)
+	fmt.Printf("matrix | m,p  | blocks(total/dropped) | step2 discard%% | key rate (bits/attempt) | %d-bit keys/batch\n", *keyBits)
 	for i, r := range rows {
 		mark := ""
 		if i == bestRate {
 			mark = " [best rate]"
 		}
-		fmt.Printf("%5d | %6d / %-7d | %13.2f%% | %22.5f | %14d%s\n",
-			r.blockSize, r.blocksTotal, r.blocksDropped, r.discardFrac*100, r.keyRate, r.keysPerBatch, mark)
+		fmt.Printf("%6s | %d,%-2d | %6d / %-7d | %13.2f%% | %22.5f | %14d%s\n",
+			r.name, r.blockSize, r.parityBits, r.blocksTotal, r.blocksDropped, r.discardFrac*100, r.keyRate, r.keysPerBatch, mark)
 	}
 
 	best := rows[bestRate]
-	fmt.Printf("\nhighest key rate: block=%d (%.5f bits/attempt, %d %d-bit keys from this batch)\n",
-		best.blockSize, best.keyRate, best.keysPerBatch, *keyBits)
+	fmt.Printf("\nhighest key rate: %s (%.5f bits/attempt, %d %d-bit keys from this batch)\n",
+		best.name, best.keyRate, best.keysPerBatch, *keyBits)
 }

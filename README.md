@@ -1,6 +1,6 @@
 ## qkdpostproc
 
-BBM92-style classical post-processing chain: coincidence **sifting**, block **error detection** (never bit-flipping), CRC **verification**, **QBER** estimation, **privacy amplification** (Devetak-Winter rate + Toeplitz hashing).
+BBM92-style classical post-processing chain: coincidence **sifting**, block **error detection** (generator-matrix parity, never bit-flipping), CRC **verification**, **QBER** estimation, **privacy amplification** (Devetak-Winter rate + Toeplitz hashing), and optional **AEAD encryption** with the distilled key.
 
 Library package (`import "qkdpostproc"`); `cmd/qkdpostproc` is a thin CLI driver that simulates click streams and calls `qkdpostproc.Run(...)`. For real detector logs, build `[]qkdpostproc.DetectionEvent` yourself and call `Run` directly.
 
@@ -10,43 +10,51 @@ Library package (`import "qkdpostproc"`); `cmd/qkdpostproc` is a thin CLI driver
 |---|---|
 | `events.go` | shared `DetectionEvent`/`Basis` types |
 | `sifting.go` | coincidence-window sifting |
-| `blockdetect.go` | block Hamming-syndrome detection (parallel, bit-packed) |
+| `blockdetect.go` | generator-matrix block parity detection (parallel, bit-packed) |
 | `crcverify.go` | CRC-32 chunk verification (parallel) |
-| `qber.go` | QBER from discarded material |
+| `qber.go` | QBER from discarded blocks over the whole sifted key |
 | `toeplitz.go` | bit-packed, parallel Toeplitz universal hash (portable) |
 | `toeplitz_clmul_amd64.{go,s}` | hardware-CLMUL Toeplitz hash (amd64 only) |
 | `privacyamp.go` | secure key length + privacy amplification |
+| `encryption.go` | AEAD encrypt/decrypt with the distilled key |
 | `pipeline.go` | `Run()`: orchestrates steps 1-5 |
-| `cmd/tuneblock` | sweeps step 2 block size for the highest key rate |
+| `cmd/tuneblock` | compares the three generator matrices for the highest key rate |
 
 ### Quick start
 
 ```bash
 go build ./...
-go run ./cmd/qkdpostproc -n 300000 -err 0.005 -block 24 -chunk 3000
+go run ./cmd/qkdpostproc -n 300000 -err 0.005 -matrix ex3 -chunk 3000
 ```
 
-Key flags (`-h` for all): `-n` raw attempts, `-err` intrinsic bit error rate, `-window` coincidence window (ps), `-block` step 2 Hamming block size, `-chunk` step 3 CRC chunk size.
+Key flags (`-h` for all): `-n` raw attempts, `-err` intrinsic bit error rate, `-window` coincidence window (ps), `-matrix` step 2 generator matrix (`ex1`/`ex2`/`ex3`), `-chunk` step 3 CRC chunk size.
 
 ### Library usage
 
 ```go
 import qkd "qkdpostproc"
 
-cfg := qkd.Config{CoincidenceWindowPS: 500, BlockSize: 24, ChunkSize: 2048}
+cfg := qkd.Config{CoincidenceWindowPS: 500, GeneratorMatrix: qkd.GeneratorMatrixEx3, ChunkSize: 2048}
 res, err := qkd.Run(aliceEvents, bobEvents, cfg)
-res.FinalKeyBytes // ready to feed into your KMS
+res.FinalKeyBytes // ready to feed into your KMS, or into EncryptWithKey below
+
+ciphertext, err := qkd.EncryptWithKey(res.FinalKeyBytes, plaintext) // AES-256-GCM, HKDF-derived key
+plaintext, err = qkd.DecryptWithKey(res.FinalKeyBytes, ciphertext)
 ```
+
+### Step 2: generator-matrix error detection
+
+The sifted key is split into fixed `m`-bit blocks; at each side, `p` parity bits are computed independently as `P = M·Gᵀ` (mod 2) from a shared `p×m` generator matrix `G`. Only the parity bits ever need to cross the public channel; if they disagree the whole block is discarded, never flipped. `GeneratorMatrixEx1`/`Ex2`/`Ex3` are three example matrices with different code-rate/detection-rate tradeoffs; pass any `p×m` `[][]byte` of your own via `Config.GeneratorMatrix`. `ComputeBlockParity` and `ReconcileBlocks` expose this as two one-sided calls - one side never needs the other's raw bits, only its parity - so two independently deployed nodes can run step 2 without a shared process; `BlockErrorDetect(alice, bob, g)` is a convenience wrapper over both for simulation and testing. QBER (step 4) is erroneous bits in the discarded blocks over *all* bits of the sifted key, not just the discarded portion.
 
 ### Performance
 
-Steps 2 and 3 split per-block/per-chunk work across a `runtime.GOMAXPROCS(0)` worker pool, reusing one scratch buffer per worker instead of allocating per block/chunk. Step 2 also precomputes each block size's Hamming parity-group structure once as bitmasks, so every block's syndrome is `r+1` branch-free AND+POPCNT word passes instead of an `O(r*m)` per-bit scan --> on 1M sifted bits this alone cuts `BlockErrorDetect` from 8.8ms to 3.3ms single-threaded (1.4ms parallel), 83k allocations down to under 40. Step 5's Toeplitz hash is the quadratic-shaped bottleneck (`O(ln)`): on amd64 with `PCLMULQDQ` (checked at runtime), the whole output is one hardware carry-less-multiply polynomial product instead of a popcount per output bit --> `2-10x` over the portable `POPCNT` fallback used everywhere else. Both parallelize across workers, but only past a measured work-size threshold --> below it (typical batch sizes: a few thousand bits) goroutine overhead costs more than it saves, so it just runs single-threaded. `toeplitzHashNaive` is kept only as a correctness oracle for tests, never use it in production. Run `make bench` for numbers on your machine.
+Steps 2 and 3 split per-block/per-chunk work across a `runtime.GOMAXPROCS(0)` worker pool, reusing one scratch buffer per worker instead of allocating per block/chunk. Step 2 also precomputes each row of `G` once as a bitmask, so every block's parity is `p` branch-free AND+POPCNT word passes instead of an `O(p·m)` per-bit scan. Step 5's Toeplitz hash is the quadratic-shaped bottleneck (`O(ln)`): on amd64 with `PCLMULQDQ` (checked at runtime), the whole output is one hardware carry-less-multiply polynomial product instead of a popcount per output bit --> `2-10x` over the portable `POPCNT` fallback used everywhere else. Both parallelize across workers, but only past a measured work-size threshold --> below it (typical batch sizes: a few thousand bits) goroutine overhead costs more than it saves, so it just runs single-threaded. `toeplitzHashNaive` is kept only as a correctness oracle for tests, never use it in production. Run `make bench` for numbers on your machine.
 
 ### Tuning
 
-This is detect-and-discard, never-flip, so step 2's block size trades survival rate against leaked syndrome bits: smaller blocks survive more often per-block but leak proportionally more. At high QBER + small blocks the final key can hit zero: that's expected, not a bug.
+This is detect-and-discard, never-flip, so step 2's generator matrix trades survival rate against leaked parity bits: `Ex1`/`Ex2` (`m=4, p=3`) survive more often per-block but leak proportionally more than `Ex3` (`m=6, p=3`, code rate 2/3). At high QBER the final key can hit zero: that's expected, not a bug.
 
-`make tune` (or `./scripts/tune-blocksize.sh -h`) sweeps block sizes over one fixed simulated batch and reports which one gives the highest key rate (final key bits per raw attempt), plus how many fixed-size keys (`-keybits`, default 256) that batch yields at each size.
+`make tune` (or `./scripts/tune-blocksize.sh -h`) runs all three matrices over one fixed simulated batch and reports which gives the highest key rate (final key bits per raw attempt), plus how many fixed-size keys (`-keybits`, default 256) that batch yields at each.
 
 ### Makefile targets
 

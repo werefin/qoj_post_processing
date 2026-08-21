@@ -5,26 +5,36 @@ import (
 	"testing"
 )
 
+// TestCalculateQBER: QBER is erroneous bits in the faulty blocks over
+// ALL bits of the sifted key, not just the discarded portion
 func TestCalculateQBER(t *testing.T) {
-	a1 := []byte{0, 1, 1, 0}
-	b1 := []byte{0, 0, 1, 1} // 2 mismatches out of 4
-	a2 := []byte{1, 1}
-	b2 := []byte{1, 0} // 1 mismatch out of 2
-	res := CalculateQBER(a1, b1, a2, b2)
-	if res.SampleBits != 6 {
-		t.Fatalf("expected 6 sample bits, got %d", res.SampleBits)
+	a := []byte{0, 1, 1, 0, 1, 1}
+	b := []byte{0, 0, 1, 1, 1, 0} // 3 mismatches, but the sifted key was 20 bits
+	res := CalculateQBER(a, b, 20)
+	if res.SampleBits != 20 {
+		t.Fatalf("expected 20 sample bits, got %d", res.SampleBits)
 	}
 	if res.ErrorBits != 3 {
 		t.Fatalf("expected 3 error bits, got %d", res.ErrorBits)
 	}
-	want := 3.0 / 6.0
+	want := 3.0 / 20.0
 	if res.QBER != want {
 		t.Fatalf("expected QBER %.4f, got %.4f", want, res.QBER)
 	}
 }
 
+// TestCalculateQBERKnownValue checks a known reference value: a 12-bit
+// sifted key with 1 erroneous bit gives QBER=8.33%
+func TestCalculateQBERKnownValue(t *testing.T) {
+	res := CalculateQBER([]byte{1}, []byte{0}, 12)
+	want := 1.0 / 12.0
+	if res.QBER != want {
+		t.Fatalf("expected QBER %.4f (8.33%%), got %.4f", want, res.QBER)
+	}
+}
+
 func TestCalculateQBEREmptySample(t *testing.T) {
-	res := CalculateQBER(nil, nil, nil, nil)
+	res := CalculateQBER(nil, nil, 0)
 	if res.QBER != 0 || res.SampleBits != 0 {
 		t.Fatalf("expected zero QBER/sample on empty input, got %+v", res)
 	}
@@ -52,7 +62,7 @@ func TestRunEndToEnd(t *testing.T) {
 		bob = append(bob, DetectionEvent{TimestampPS: tcur, Basis: bBasis, Bit: bBit})
 	}
 
-	cfg := Config{CoincidenceWindowPS: 500, BlockSize: 24, ChunkSize: 2048}
+	cfg := Config{CoincidenceWindowPS: 500, GeneratorMatrix: GeneratorMatrixEx3, ChunkSize: 2048}
 	res, err := Run(alice, bob, cfg)
 	if err != nil {
 		t.Fatalf("Run returned error: %v", err)

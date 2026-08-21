@@ -13,6 +13,14 @@ import (
 	qkd "qkdpostproc"
 )
 
+// generatorMatrices maps -matrix flag values to the three example
+// step 2 generator matrices
+var generatorMatrices = map[string]qkd.GeneratorMatrix{
+	"ex1": qkd.GeneratorMatrixEx1,
+	"ex2": qkd.GeneratorMatrixEx2,
+	"ex3": qkd.GeneratorMatrixEx3,
+}
+
 // ANSI color codes for status tags, arnika-style: raw escapes inlined at the
 // call site rather than pulled in via a color library
 const (
@@ -78,10 +86,16 @@ func main() {
 	mpRate := flag.Float64("multiphoton", 0.01, "probability a given click is flagged multi-photon")
 	windowPS := flag.Int64("window", 500, "coincidence window in picoseconds")
 	jitterPS := flag.Int64("jitter", 300, "simulated detector timing jitter in picoseconds")
-	blockSize := flag.Int("block", 24, "step 2 Hamming block size (data bits)")
+	matrixName := flag.String("matrix", "ex3", "step 2 generator matrix: ex1, ex2, or ex3")
 	chunkSize := flag.Int("chunk", 2048, "step 3 CRC chunk size (bits)")
 	seed := flag.Int64("seed", 1, "PRNG seed for the simulation")
 	flag.Parse()
+
+	g, ok := generatorMatrices[*matrixName]
+	if !ok {
+		fmt.Printf("%s unknown -matrix %q, expected ex1, ex2, or ex3\n", tag(colorErr, "ERROR"), *matrixName)
+		return
+	}
 
 	section("qkdpostproc run configuration:")
 	field("Raw attempts", "%d", *n)
@@ -89,7 +103,7 @@ func main() {
 	field("Multi-photon rate", "%.4f", *mpRate)
 	field("Coincidence window", "%d ps", *windowPS)
 	field("Detector jitter", "%d ps", *jitterPS)
-	field("Block size (step 2)", "%d bits", *blockSize)
+	field("Generator matrix (step 2)", "%s (m=%d, p=%d)", *matrixName, g.BlockSize(), g.ParityBits())
 	field("Chunk size (step 3)", "%d bits", *chunkSize)
 	field("PRNG seed", "%d", *seed)
 	field("GOMAXPROCS", "%d", runtime.GOMAXPROCS(0))
@@ -98,7 +112,7 @@ func main() {
 
 	cfg := qkd.Config{
 		CoincidenceWindowPS: *windowPS,
-		BlockSize:           *blockSize,
+		GeneratorMatrix:     g,
 		ChunkSize:           *chunkSize,
 	}
 
@@ -123,12 +137,12 @@ func main() {
 	if blockDiscardFrac > 0.5 {
 		blockTag = tag(colorWarn, "WARN")
 	}
-	section(fmt.Sprintf("(2): error detection (block=%d bits)", *blockSize))
+	section(fmt.Sprintf("(2): error detection (matrix=%s, block=%d bits)", *matrixName, g.BlockSize()))
 	field("Blocks total", "%d", bd.BlocksTotal)
 	field("Blocks kept", "%d", bd.BlocksKept)
 	field("Blocks dropped", "%d (%.1f%%) "+blockTag, bd.BlocksDropped, blockDiscardFrac*100)
 	field("Bits surviving", "%d", len(bd.SurvivingAlice))
-	field("Bits leaked (syndromes)", "%d", bd.LeakedBits)
+	field("Bits leaked (parity)", "%d", bd.LeakedBits)
 
 	cv := res.CRCVerify
 	section(fmt.Sprintf("(3): error verification (chunk=%d bits, CRC-32)", *chunkSize))
@@ -139,8 +153,8 @@ func main() {
 	field("Bits leaked (CRCs)", "%d", cv.LeakedBits)
 
 	section("(4): QBER calculation")
-	field("Sample bits (discarded)", "%d", res.QBER.SampleBits)
-	field("Error bits in sample", "%d", res.QBER.ErrorBits)
+	field("Sample bits (sifted key)", "%d", res.QBER.SampleBits)
+	field("Error bits in faulty blocks", "%d", res.QBER.ErrorBits)
 	field("QBER estimate", "%.4f", res.QBER.QBER)
 
 	residualErr := 0

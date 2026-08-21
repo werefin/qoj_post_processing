@@ -67,7 +67,7 @@ func BenchmarkBlockErrorDetect_1M(b *testing.B) {
 	bob := append([]byte(nil), alice...)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		BlockErrorDetect(alice, bob, 24)
+		BlockErrorDetect(alice, bob, GeneratorMatrixEx3)
 	}
 }
 
